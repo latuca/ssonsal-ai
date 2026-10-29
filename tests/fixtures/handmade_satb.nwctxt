@@ -1,0 +1,56 @@
+!NoteWorthyComposer(2.75)
+|SongInfo|Title:"작은 연습곡"
+|AddStaff|Name:"S"
+|Lyrics|Placement:Bottom|Align:Standard Rules|Offset:0
+|Lyric1|Text:"도 레 미- _ 솔 sing-ing"
+|Clef|Type:Treble
+|Key|Signature:F#
+|TimeSig|Signature:4/4
+|Tempo|Tempo:92
+|Note|Dur:Half|Pos:-2
+|Note|Dur:4th,Dotted|Pos:0
+|Note|Dur:8th|Pos:1^
+|Bar
+|Note|Dur:Half|Pos:1
+|Note|Dur:8th|Pos:n3
+|Note|Dur:8th|Pos:3
+|Rest|Dur:4th
+|Bar
+|Note|Dur:4th|Pos:2
+|Note|Dur:4th|Pos:#4
+|Note|Dur:Half|Pos:4
+|AddStaff|Name:"A"
+|Clef|Type:Treble
+|Key|Signature:F#
+|TimeSig|Signature:4/4
+|Note|Dur:Half|Pos:-4
+|Note|Dur:Half|Pos:-3
+|Bar
+|Rest|Dur:Whole
+|Bar
+|Note|Dur:4th|Pos:-2
+|Note|Dur:8th|Pos:b-1
+|Note|Dur:8th|Pos:-1
+|Note|Dur:Half|Pos:-2
+|AddStaff|Name:"T"
+|Clef|Type:Treble|OctaveShift:Octave Down
+|Key|Signature:F#
+|TimeSig|Signature:4/4
+|Note|Dur:Whole|Pos:-1^
+|Bar
+|Note|Dur:Whole|Pos:-1
+|Bar
+|Chord|Dur:Whole|Pos:-3,0
+|AddStaff|Name:"B"
+|Clef|Type:Bass
+|Key|Signature:F#
+|TimeSig|Signature:4/4
+|Note|Dur:Half,Dotted|Pos:-3
+|Note|Dur:16th|Pos:-2
+|Note|Dur:16th|Pos:-1
+|Note|Dur:8th|Pos:0
+|Bar
+|Note|Dur:Whole|Pos:1
+|Bar
+|Note|Dur:Whole|Pos:-3
+!NoteWorthyComposer-End

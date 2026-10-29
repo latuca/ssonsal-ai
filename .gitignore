@@ -1,0 +1,50 @@
+# 데이터·모델·출력은 레포에 올리지 않는다 (docs/design.md 지침 3)
+data/
+models/
+outputs/
+checkpoints/
+runs/
+tests/fixtures/local/
+
+# 음원·악보
+*.nwc
+*.mp3
+*.wav
+*.m4a
+*.flac
+*.ogg
+*.opus
+*.webm
+*.mp4
+*.mid
+*.midi
+# 직접 만든 테스트 픽스처는 예외
+!tests/fixtures/*.nwctxt
+
+# 모델 가중치
+*.onnx
+*.pt
+*.ckpt
+*.tflite
+*.h5
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# 패키징 산출물
+packaging/build/
+packaging/dist/
+
+# 기타
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+settings.json
