@@ -11,7 +11,7 @@ onset 세기 주기성으로 3/4와 4/4 중에서 고르고, 같은 방법으로
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 
 import numpy as np
@@ -32,6 +32,7 @@ class BeatGrid:
     tempo_bpm: float
     time_sig: tuple[int, int]
     downbeat_offset: int  # 첫 강박이 되는 beat_times 인덱스(0..마디박수-1)
+    shift_beats: Fraction = Fraction(0)  # 못갖춘마디 때문에 앞에 더한 박 수(마디 단위)
 
     @property
     def period(self) -> float:
@@ -46,7 +47,12 @@ class BeatGrid:
         before, after = t < bt[0], t > bt[-1]
         out[before] = idx[0] - (bt[0] - t[before]) / self.period
         out[after] = idx[-1] + (t[after] - bt[-1]) / self.period
-        return out
+        return out + float(self.shift_beats)
+
+    def time_map(self) -> tuple[np.ndarray, np.ndarray]:
+        """(박 위치, 초) 대응표. 평가에서 Score의 박을 초로 바꿀 때 쓴다."""
+        idx = np.arange(self.beat_times.size, dtype=np.float64) - self.downbeat_offset
+        return idx + float(self.shift_beats), self.beat_times.copy()
 
 
 def track_beats(
@@ -146,17 +152,30 @@ def make_grid(
     return BeatGrid(beat_times=beats, tempo_bpm=bpm, time_sig=ts, downbeat_offset=phase)
 
 
-def quantize_events(
-    events: list[NoteEvent], grid: BeatGrid, division: int, shift: Fraction = Fraction(0)
-) -> list[QNote]:
+def with_pickup_shift(grid: BeatGrid, notes: dict[str, list[NoteEvent]], division: int) -> BeatGrid:
+    """첫 음이 음수 박에 오면(못갖춘마디) 마디 단위로 밀어 0 이상이 되게 한 격자를 돌려준다."""
+    measure = Fraction(grid.time_sig[0] * 4, grid.time_sig[1])
+    firsts = [evs[0].onset for evs in notes.values() if evs]
+    if not firsts:
+        return grid
+    base = replace(grid, shift_beats=Fraction(0))
+    first = float(base.to_beats(np.array([min(firsts)]))[0])
+    earliest = Fraction(int(round(first * division)), division)
+    shift = Fraction(0)
+    while earliest + shift < 0:
+        shift += measure
+    return replace(grid, shift_beats=shift)
+
+
+def quantize_events(events: list[NoteEvent], grid: BeatGrid, division: int) -> list[QNote]:
     if not events:
         return []
     on = grid.to_beats(np.array([e.onset for e in events]))
     off = grid.to_beats(np.array([e.offset for e in events]))
     out = []
     for e, a, b in zip(events, on, off):
-        start = Fraction(int(round(a * division)), division) + shift
-        end = Fraction(int(round(b * division)), division) + shift
+        start = Fraction(int(round(a * division)), division)
+        end = Fraction(int(round(b * division)), division)
         if end <= start:
             end = start + Fraction(1, division)
         out.append(QNote(start_beat=start, dur_beats=end - start, midi=e.midi))
@@ -172,21 +191,14 @@ def quantize(
     th: Thresholds | None = None,
     grid: BeatGrid | None = None,
 ) -> Score:
+    """grid를 주면 그대로 쓰고(못갖춘마디 이동 포함), 없으면 비트 추적으로 만든다."""
     th = th or Thresholds()
-    onsets = [evs[0].onset for evs in notes.values() if evs]
-    grid = grid or make_grid(clip, tempo_bpm, time_sig, min(onsets) if onsets else None, th)
-    measure = Fraction(grid.time_sig[0] * 4, grid.time_sig[1])
-
-    # 첫 음이 음수 박에 오면(못갖춘마디) 마디 단위로 밀어 0 이상으로 만든다
-    firsts = [grid.to_beats(np.array([evs[0].onset]))[0] for evs in notes.values() if evs]
-    shift = Fraction(0)
-    if firsts:
-        earliest = Fraction(int(round(min(firsts) * th.grid_division)), th.grid_division)
-        while earliest + shift < 0:
-            shift += measure
-
+    if grid is None:
+        onsets = [evs[0].onset for evs in notes.values() if evs]
+        grid = make_grid(clip, tempo_bpm, time_sig, min(onsets) if onsets else None, th)
+        grid = with_pickup_shift(grid, notes, th.grid_division)
     parts = {
-        name: quantize_events(sorted(evs, key=lambda e: e.onset), grid, th.grid_division, shift)
+        name: quantize_events(sorted(evs, key=lambda e: e.onset), grid, th.grid_division)
         for name, evs in notes.items()
     }
     if voices is None:

@@ -11,7 +11,13 @@ from acappella.pipeline.notes import segment_notes
 from acappella.pipeline.pitch import contour_midi_bins, frame_times
 from acappella.pipeline.postprocess import estimate_key, fill_unisons, postprocess, remove_spurious
 from acappella.pipeline.preprocess import normalize_loudness
-from acappella.pipeline.rhythm import BeatGrid, estimate_meter, fix_tempo_octave, quantize
+from acappella.pipeline.rhythm import (
+    BeatGrid,
+    estimate_meter,
+    fix_tempo_octave,
+    quantize,
+    with_pickup_shift,
+)
 from acappella.pipeline.voices import assign_frame, assign_voices, harmonic_weighted
 from acappella.score_utils import monophony_violations
 from acappella.types import (
@@ -210,6 +216,8 @@ def test_quantize_shifts_pickup_into_first_measure():
     clip = AudioClip(np.zeros(22050, np.float32), 22050, "x", "t")
     grid = BeatGrid(np.arange(1, 40) * 0.5, 120.0, (4, 4), 0)  # 첫 박이 0.5초
     ev = {"S": [NoteEvent(0.0, 0.5, 67), NoteEvent(0.5, 1.0, 72)]}
+    grid = with_pickup_shift(grid, ev, 4)
+    assert grid.shift_beats == 4
     score = quantize(ev, clip, [VoiceSpec("S", "treble", 60, 81)], grid=grid)
     assert [q.start_beat for q in score.parts["S"]] == [3, 4]
 

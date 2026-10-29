@@ -30,7 +30,7 @@ from acappella.pipeline.notes import segment_notes
 from acappella.pipeline.pitch import estimate_pitch
 from acappella.pipeline.postprocess import postprocess
 from acappella.pipeline.preprocess import preprocess
-from acappella.pipeline.rhythm import quantize
+from acappella.pipeline.rhythm import make_grid, quantize, with_pickup_shift
 from acappella.pipeline.voices import assign_voices
 from acappella.score_utils import check_invariants, range_warnings
 from acappella.types import Score, VoiceSpec
@@ -161,7 +161,12 @@ def run_pipeline(
         notes = segment_notes(tracks, act, th)
         dump("5_notes.json", {k: [asdict(n) for n in v] for k, v in notes.items()})
         step(5)
-        score = quantize(notes, clip, voices, opts.tempo_bpm, opts.time_sig, th)
+        onsets = [evs[0].onset for evs in notes.values() if evs]
+        grid = make_grid(clip, opts.tempo_bpm, opts.time_sig, min(onsets) if onsets else None, th)
+        grid = with_pickup_shift(grid, notes, th.grid_division)
+        score = quantize(notes, clip, voices, th=th, grid=grid)
+        beats, secs = grid.time_map()
+        dump("6_timemap.json", {"beats": beats.tolist(), "seconds": secs.tolist()})
         dump("6_quantized.json", score_to_dict(score))
         step(6)
         score = postprocess(score, th, opts.key_fifths)
