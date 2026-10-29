@@ -150,8 +150,11 @@ class Thresholds:
     peak_limit: float = 0.99
     # voices (규칙 기반 성부 배정)
     voice_frame_hop: int = 2  # Basic Pitch 프레임(약 11.6ms)을 몇 개씩 묶을지
+    peak_smooth_frames: int = 5  # 후보를 찾기 전 시간 축 이동 평균 길이(묶은 프레임 기준)
     peak_abs_threshold: float = 0.25  # 이보다 약한 피치 후보는 버린다
     peak_rel_threshold: float = 0.35  # 프레임 최댓값 대비 비율
+    harmonic_ratio: float = 0.6  # 아래 후보가 이 비율 이상 세면 배음으로 본다
+    harmonic_penalty: float = 0.5  # 배음으로 본 후보의 salience 배수
     range_margin: int = 3  # 음역 밖 이 반음까지는 벌점 없이 허용
     range_weight: float = 0.6  # 음역 밖 반음당 벌점
     unison_cost: float = 0.6  # 두 성부가 같은 후보를 나눠 가질 때 벌점(유니즌 채우기)
@@ -166,7 +169,11 @@ class Thresholds:
     min_note_sec: float = 0.08
     onset_split_min_sec: float = 0.12
     # rhythm
-    grid_division: int = 4  # 4분음표 하나를 몇 칸으로 나눌지(4 = 16분음표 격자)
+    grid_division: int = 4
+    tempo_min: float = 65.0  # 추정 템포가 이보다 느리면 두 배로 본다
+    tempo_max: float = (
+        170.0  # 이보다 빠르면 절반으로 본다  # 4분음표 하나를 몇 칸으로 나눌지(4 = 16분음표 격자)
+    )
     # postprocess
     spurious_max_beats: float = 0.25
     spurious_jump: int = 5

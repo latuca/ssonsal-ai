@@ -61,12 +61,12 @@ def enforce_monophony(part: list[QNote]) -> list[QNote]:
             for q in part
             if q.midi is not None
         ),
-        key=lambda x: (x.start_beat, -(x.midi or 0)),
+        key=lambda x: (x.start_beat, -x.dur_beats, -(x.midi or 0)),
     )
     out: list[QNote] = []
     for q in seq:
         if out and out[-1].start_beat == q.start_beat:
-            continue  # 같은 시작점이면 먼저 온(높은) 음을 남긴다
+            continue  # 같은 시작점이면 가장 긴 음(같으면 높은 음)을 남긴다
         if out and out[-1].start_beat + out[-1].dur_beats > q.start_beat:
             out[-1].dur_beats = q.start_beat - out[-1].start_beat
         if q.dur_beats > 0:
