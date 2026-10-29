@@ -1,6 +1,7 @@
 """데이터 구축 도구 테스트(가짜 아카이브)."""
 
 import csv
+import shutil
 import sys
 import zlib
 from pathlib import Path
@@ -118,3 +119,25 @@ def test_build_dataset_splits_by_group(tmp_path):
     assert metas["s0001"].voices == ["S", "A", "T", "B"]
     assert not build_dataset.check_disjoint(list(metas.values()))
     assert len(load_all(data / "meta" / "songs")) == 8
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg 없음")
+def test_real_data_example(tmp_path):
+    import soundfile as sf
+
+    from acappella.config import Settings
+    from acappella.nwc.writer import write_nwctxt
+    from training.real_data import make_real_example
+
+    data = tmp_path / "data"
+    write_nwctxt(chorale_score(), data / "nwctxt" / "s0001.nwctxt")
+    y, _ = render_satb(CHORALE, bpm=100)
+    (data / "audio").mkdir()
+    sf.write(str(data / "audio" / "s0001.wav"), y, SR)
+    (data / "align").mkdir()
+    (data / "align" / "s0001.csv").write_text("beat,seconds\n0,0\n16,9.6\n", encoding="utf-8")
+    meta = SongMeta("s0001", tier="B", voices=["S", "A", "T", "B"], split="train")
+    sal, tgt, ranges = make_real_example(meta, data, Settings(home=tmp_path / "h"), backend="cqt")
+    assert sal.shape[1] == 264 and tgt.shape[0] == 8
+    t = int(1.0 / (256 / 22050))  # 1초 = 첫 화음
+    assert list(tgt[:4, t]) == [72, 67, 64, 48]
