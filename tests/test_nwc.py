@@ -140,9 +140,30 @@ def _score(parts, voices=None, time_sig=(4, 4), key=0):
 def test_split_duration_respects_beats():
     assert split_duration(F(0), F(4), F(4)) == [4]
     assert split_duration(F(0), F(3), F(3)) == [3]
-    assert split_duration(F(1, 2), F(3, 2), F(4)) == [F(1, 2), 1]
+    # 4/4: 반 박 뒤 점4분음표(1/2, 5/2)는 한 음으로, 마디 가운데를 가리는 3/2는 나눈다
+    assert split_duration(F(1, 2), F(3, 2), F(4)) == [F(3, 2)]
+    assert split_duration(F(3, 2), F(3, 2), F(4)) == [F(1, 2), 1]
+    assert split_duration(F(3, 2), F(1), F(4)) == [F(1, 2), F(1, 2)]
+    assert split_duration(F(1), F(2), F(4)) == [2]
     assert split_duration(F(1, 4), F(1, 2), F(4)) == [F(1, 4), F(1, 4)]
     assert sum(split_duration(F(1), F(5, 2), F(4))) == F(5, 2)
+    # 4/4 밖에서는 박 경계 규칙
+    assert split_duration(F(1, 2), F(3, 2), F(3)) == [F(1, 2), 1]
+
+
+def test_writer_beams_eighths_by_half_bar_and_sixteenths_by_beat():
+    eighths = [QNote(F(k, 2), F(1, 2), 72) for k in range(8)]
+    lines = score_to_nwctxt(_score({"S": eighths})).splitlines()
+    notes = [x for x in lines if x.startswith("|Note")]
+    assert [n.split("Beam")[-1] for n in notes] == ["=First", "", "", "=End"] * 2
+    assert all("Opts:Stem=" in n for n in notes)
+    sixteenths = [QNote(F(k, 4), F(1, 4), 60) for k in range(8)] + [QNote(F(2), F(2), 60)]
+    lines = score_to_nwctxt(_score({"S": sixteenths})).splitlines()
+    notes = [x for x in lines if x.startswith("|Note")]
+    assert sum("Beam=First" in n for n in notes) == 2
+    assert "Opts" not in notes[-1]
+    parsed = parse_nwctxt("\n".join(lines))
+    assert len(merge_ties(parsed.score.parts["S"])) == 9
 
 
 def test_writer_splits_across_bars_with_ties_and_fills_rests():

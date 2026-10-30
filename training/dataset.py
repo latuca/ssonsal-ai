@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -18,8 +19,12 @@ from acappella.pipeline.voices import (
     ONNX_OUT_BINS,
     ONNX_WINDOW,
 )
+from training.storage import unpack_salience
 
 IGNORE = -100
+
+
+CACHE_FILES = 48  # 워커마다 들고 있는 파일 수. salience는 저장 형식(8비트) 그대로 둔다
 
 
 def _load(path: Path) -> dict:
@@ -37,7 +42,9 @@ class VoiceDataset(Dataset):
         self.train = train
         self.windows_per_file = windows_per_file
         self.max_shift = max_shift if train else 0
+        self.seed = seed
         self.rng = np.random.default_rng(seed)
+        self._rng_pid = os.getpid()
         self._cache: dict[int, dict] = {}
         self.items: list[tuple[int, int]] = []
         if not train:  # 고정 구간: 파일마다 겹치지 않게 앞에서부터
@@ -51,12 +58,16 @@ class VoiceDataset(Dataset):
 
     def _get(self, i: int) -> dict:
         if i not in self._cache:
-            if len(self._cache) > 256:
-                self._cache.clear()
+            if len(self._cache) >= CACHE_FILES:
+                self._cache.pop(next(iter(self._cache)))
             self._cache[i] = _load(self.files[i])
         return self._cache[i]
 
     def __getitem__(self, idx: int):
+        if os.getpid() != self._rng_pid:
+            # DataLoader 워커는 fork로 같은 난수 상태를 물려받는다. 워커마다 다시 시드를 준다
+            self._rng_pid = os.getpid()
+            self.rng = np.random.default_rng([self.seed, torch.initial_seed() % 2**32])
         if self.train:
             fi = idx % len(self.files)
             d = self._get(fi)
@@ -73,7 +84,7 @@ class VoiceDataset(Dataset):
 
 
 def make_example(d: dict, start: int, shift: int):
-    sal = d["salience"][start : start + ONNX_WINDOW].astype(np.float32)
+    sal = unpack_salience(d["salience"][start : start + ONNX_WINDOW]).astype(np.float32)
     tgt = d["target_midi"][:, start : start + ONNX_WINDOW].astype(np.int64)
     pad = ONNX_WINDOW - sal.shape[0]
     if pad > 0:

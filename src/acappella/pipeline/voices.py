@@ -296,8 +296,43 @@ def _median_filter_1d(x: np.ndarray, w: int) -> np.ndarray:
     return np.median(windows, axis=-1)
 
 
+def dedupe_unisons(prob: np.ndarray, active: np.ndarray, ratio: float) -> np.ndarray:
+    """프레임마다 성부 음높이를 고른다(prob (K,T,B), active (K,T) bool → (K,T) 빈 번호, 무음 -1).
+
+    확신이 높은 성부부터 고르고, 이미 다른 성부가 고른 음은 피한다. 남은 음 중 최선의 확률이
+    자기 1순위의 ``ratio`` 배 이상일 때만 바꾸고, 아니면 진짜 유니즌으로 보고 같은 음을 둔다.
+    모델이 이웃 성부와 같은 음을 고르는 비율(약 30%)이 실제 악보(4~12%)보다 훨씬 높아서 넣었다.
+    """
+    K, T, _ = prob.shape
+    top = prob.argmax(-1)
+    out = np.where(active, top, -1)
+    if ratio <= 0:
+        return out
+    conf = prob.max(-1)
+    voiced = out >= 0
+    same = (out[:, None, :] == out[None, :, :]) & voiced[:, None, :]
+    for t in np.nonzero(same.sum((0, 1)) > voiced.sum(0))[0]:  # 대각선 말고도 같은 음이 있는 프레임
+        slots = [k for k in np.argsort(-conf[:, t]) if active[k, t]]
+        taken: set[int] = set()
+        for k in slots:
+            choice = int(top[k, t])
+            if choice in taken:
+                p = prob[k, t].copy()
+                p[list(taken)] = -1
+                alt = int(p.argmax())
+                if p[alt] >= ratio * conf[k, t]:
+                    choice = alt
+            out[k, t] = choice
+            taken.add(choice)
+    return out
+
+
 def assign_voices_onnx(
-    act: PitchActivation, voices: list[VoiceSpec], model_path: Path, session=None
+    act: PitchActivation,
+    voices: list[VoiceSpec],
+    model_path: Path,
+    session=None,
+    dedupe_ratio: float = 0.0,
 ) -> list[VoiceTrack]:
     if len(voices) > ONNX_K:
         raise ValueError(f"ONNX 모델은 성부를 최대 {ONNX_K}개까지 지원합니다.")
@@ -326,11 +361,15 @@ def assign_voices_onnx(
         weight[s : s + ONNX_WINDOW] += 1
     pitch_acc /= weight[None, :, None]
     act_acc /= weight[None, :]
+    n = len(voices)
+    active_all = np.stack([_median_filter_1d(act_acc[k, :T], 5) > 0.5 for k in range(n)])
+    bins = dedupe_unisons(pitch_acc[:n, :T], active_all, dedupe_ratio)
     tracks: dict[int, VoiceTrack] = {}
     for k, vi in enumerate(order):
-        midi = ONNX_OUT_BASE_MIDI + pitch_acc[k, :T].argmax(axis=-1).astype(np.float64)
-        midi = _median_filter_1d(midi, 5)
-        active = _median_filter_1d(act_acc[k, :T], 5) > 0.5
+        # 무음 프레임은 모델 1순위로 메워 두고 메디안을 건다(nan이 번지지 않게)
+        filled = np.where(bins[k] >= 0, bins[k], pitch_acc[k, :T].argmax(axis=-1))
+        midi = _median_filter_1d(ONNX_OUT_BASE_MIDI + filled.astype(np.float64), 5)
+        active = active_all[k]
         f0 = np.where(active, np.round(midi), np.nan)
         tracks[vi] = VoiceTrack(
             voice=voices[vi], times=np.asarray(act.times, float).copy(), f0_midi=f0
@@ -357,7 +396,10 @@ def assign_voices(
         if model_path is None or not Path(model_path).exists():
             raise FileNotFoundError(f"성부 배정 모델 파일이 없습니다: {model_path}")
         try:
-            return assign_voices_onnx(act, voices, Path(model_path))
+            th = th or Thresholds()
+            return assign_voices_onnx(
+                act, voices, Path(model_path), dedupe_ratio=th.onnx_dedupe_ratio
+            )
         except Exception:
             log.exception("ONNX 성부 배정에 실패해 규칙 기반으로 전환합니다.")
             return assign_voices_rule(act, voices, th)

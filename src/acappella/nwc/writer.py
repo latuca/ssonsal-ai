@@ -3,6 +3,11 @@
 성부 하나에 스태프 하나, 화음 없이 단선율로 쓴다. 빈 구간은 쉼표로 채워 모든 마디 길이를
 박자표에 맞추고, 마디를 넘는 음은 타이로 나눈다. 셋잇단음표는 v1에서 쓰지 않는다.
 
+음가를 어디서 시작할 수 있는지(4/4)는 동아리 악보 412곡의 실제 분포를 따랐다. 예를 들어 4분음표는
+박 위(92%)나 반 박 뒤(7%), 점4분음표는 마디 앞·가운데와 반 박 뒤(1/2, 5/2), 2분음표는 0·1·2박에서
+시작한다. 8분·16분음표는 4/4에서 반 마디, 그 밖에는 한 박 단위로 빔을 묶는다(16분음표가 섞이면
+한 박). 실제 파일의 빔은 모두 ``Opts:Stem=Up|Down,Beam=First|Beam|Beam=End`` 꼴이라 꼬리 방향을 함께 쓴다.
+
 주의: 아래 문법은 docs/design.md의 예시와 공개된 nwctxt 문서를 기준으로 했다. 실제 동아리
 NWC에서 내보낸 파일로 왕복 테스트(tests/test_nwc_roundtrip.py, tests/fixtures/local/)를
 통과시키기 전까지는 "검증 전"으로 본다.
@@ -11,6 +16,7 @@ NWC에서 내보낸 파일로 왕복 테스트(tests/test_nwc_roundtrip.py, test
 from __future__ import annotations
 
 import logging
+import re
 from fractions import Fraction
 from pathlib import Path
 
@@ -50,26 +56,40 @@ def escape_text(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"').replace("|", "\\|").replace("\n", "\\n")
 
 
+# 4/4에서 음가별로 시작할 수 있는 마디 안 위치(박). 없는 음가는 아래 일반 규칙을 따른다.
+_COMMON_TIME_STARTS: dict[Fraction, set[Fraction]] = {
+    Fraction(3): {Fraction(0), Fraction(1)},
+    Fraction(2): {Fraction(0), Fraction(1), Fraction(2)},
+    Fraction(3, 2): {Fraction(0), Fraction(1, 2), Fraction(2), Fraction(5, 2)},
+    Fraction(1): {Fraction(k, 2) for k in range(8) if k != 3},  # 3/2는 마디 가운데를 가린다
+}
+
+
+def _allowed(d: Fraction, plain: Fraction, pos: Fraction, bar_len: Fraction) -> bool:
+    if d == 4:
+        return pos == 0 and bar_len == 4
+    if bar_len == 4 and d in _COMMON_TIME_STARTS:
+        return pos in _COMMON_TIME_STARTS[d]
+    if pos % min(plain if d == plain else 2 * plain, Fraction(1)) != 0:
+        return False  # 점음표는 기본 음가 두 배 격자에서만 시작한다
+    return not (
+        pos % 1 != 0 and pos + d > (pos // 1) + 1
+    )  # 박 중간에서 시작하면 다음 박을 넘지 않는다
+
+
 def split_duration(pos_in_bar: Fraction, length: Fraction, bar_len: Fraction) -> list[Fraction]:
     """마디 안의 한 구간(마디를 넘지 않음)을 표기 가능한 음가 열로 나눈다.
 
-    박 경계를 존중하도록, 음가는 자기 기본 음가(최대 4분음표) 격자 위에서만 시작하고,
-    박 중간에서 시작한 음가는 다음 박을 넘지 않는다.
+    4/4에서 4분음표 이상은 ``_COMMON_TIME_STARTS`` 위치에서만 시작한다. 그 밖의 음가·박자는
+    자기 기본 음가(최대 4분음표) 격자 위에서만 시작하고, 박 중간에서 시작하면 다음 박을 넘지 않는다.
     온음표는 마디 첫머리에서 4/4 마디를 꽉 채울 때만 쓴다.
     """
     out: list[Fraction] = []
     pos, remaining = pos_in_bar, length
     while remaining > 0:
         for d, _, plain in DURATIONS:
-            if d > remaining:
-                continue
-            if d == 4 and not (pos == 0 and bar_len == 4):
-                continue
-            if pos % min(plain if d == plain else 2 * plain, Fraction(1)) != 0:
-                continue  # 점음표는 기본 음가 두 배 격자에서만 시작한다
-            if pos % 1 != 0 and pos + d > (pos // 1) + 1:
-                continue  # 박 중간에서 시작한 음은 다음 박을 넘지 않는다
-            break
+            if d <= remaining and _allowed(d, plain, pos, bar_len):
+                break
         else:
             # 격자에 맞지 않는 구간: 들어가는 가장 큰 음가로 채운다
             fits = [d for d, _, _ in DURATIONS if d <= remaining]
@@ -115,11 +135,55 @@ def _lyric_text(tokens: list[str]) -> str:
     return text
 
 
+_BEAMABLE = Fraction(1, 2)  # 8분음표 이하
+
+
+def _beam_unit(bar_len: Fraction, has_16th: bool) -> Fraction:
+    return Fraction(2) if bar_len == 4 and not has_16th else Fraction(1)
+
+
+def _beam_opts(events: list[dict], bar_len: Fraction) -> None:
+    """같은 묶음 단위 안에서 이어지는 8분·16분음표에 Beam=First/Beam/Beam=End를 붙인다."""
+    groups: list[list[dict]] = []
+    cur: list[dict] = []
+    cur_key = None
+    for ev in events:
+        if ev["kind"] != "note" or ev["plain"] > _BEAMABLE:
+            if len(cur) > 1:
+                groups.append(cur)
+            cur, cur_key = [], None
+            continue
+        key = (ev["bar"], ev["half"])
+        if cur and key != cur_key:
+            if len(cur) > 1:
+                groups.append(cur)
+            cur = []
+        cur.append(ev)
+        cur_key = key
+    if len(cur) > 1:
+        groups.append(cur)
+    for g in groups:
+        # 16분음표가 섞인 반 마디는 한 박씩 다시 나눈다
+        if any(e["plain"] < _BEAMABLE for e in g) and bar_len == 4:
+            sub: dict[Fraction, list[dict]] = {}
+            for e in g:
+                sub.setdefault(e["pos"] // 1, []).append(e)
+            parts = [x for x in sub.values() if len(x) > 1]
+        else:
+            parts = [g]
+        for part in parts:
+            mean = sum(e["staff_pos"] for e in part) / len(part)
+            stem = "Down" if mean >= 0 else "Up"
+            for i, e in enumerate(part):
+                beam = "Beam=First" if i == 0 else "Beam=End" if i == len(part) - 1 else "Beam"
+                e["opts"] = f"|Opts:Stem={stem},{beam}"
+
+
 def _staff_events(part: list[QNote], score: Score, clef: str, total: Fraction):
     """한 스태프의 (줄 목록, 가사 토큰 목록)을 만든다."""
     bar_len = score.measure_beats()
     acc = BarAccidentals(score.key_fifths, clef)
-    lines: list[str] = []
+    events: list[dict] = []
     lyric_tokens: list[str] = []
     for q in _fill_rests(part, total):
         start, end = q.start_beat, q.start_beat + q.dur_beats
@@ -132,18 +196,39 @@ def _staff_events(part: list[QNote], score: Score, clef: str, total: Fraction):
                 pieces.append((t, d))
                 t += d
         for i, (t, d) in enumerate(pieces):
+            bar = t // bar_len
             if t > 0 and t % bar_len == 0:
-                lines.append("|Bar")
+                events.append({"kind": "bar"})
                 acc.reset()
+            plain = next(p for v, _, p in DURATIONS if v == d)
+            ev = {"bar": bar, "pos": t - bar * bar_len, "plain": plain, "d": d, "opts": ""}
+            ev["half"] = ev["pos"] // _beam_unit(bar_len, False)
             if q.midi is None:
-                lines.append(f"|Rest|Dur:{dur_string(d)}")
+                events.append({**ev, "kind": "rest"})
                 continue
             last = i == len(pieces) - 1
             tie = (not last) or q.tie_next
             pos = acc.encode(q.midi)
-            lines.append(f"|Note|Dur:{dur_string(d)}|Pos:{pos}{'^' if tie else ''}")
+            m = re.search(r"-?\d+", pos)
+            events.append(
+                {
+                    **ev,
+                    "kind": "note",
+                    "pos_text": f"{pos}{'^' if tie else ''}",
+                    "staff_pos": int(m.group()) if m else 0,
+                }
+            )
             if i == 0:
                 lyric_tokens.append(q.lyric if q.lyric else "_")
+    _beam_opts(events, bar_len)
+    lines: list[str] = []
+    for ev in events:
+        if ev["kind"] == "bar":
+            lines.append("|Bar")
+        elif ev["kind"] == "rest":
+            lines.append(f"|Rest|Dur:{dur_string(ev['d'])}")
+        else:
+            lines.append(f"|Note|Dur:{dur_string(ev['d'])}|Pos:{ev['pos_text']}{ev['opts']}")
     return lines, lyric_tokens
 
 
