@@ -141,3 +141,57 @@ def test_real_data_example(tmp_path):
     assert sal.shape[1] == 264 and tgt.shape[0] == 8
     t = int(1.0 / (256 / 22050))  # 1초 = 첫 화음
     assert list(tgt[:4, t]) == [72, 67, 64, 48]
+
+
+def test_parse_file_name_and_title_key():
+    info = build_dataset.parse_file_name(
+        "[The idea of north] 세상에 뿌려진 사랑만큼_이승환_SATB_채보.nwc"
+    )
+    assert info == {
+        "file_title": "세상에 뿌려진 사랑만큼",
+        "artist": "이승환",
+        "pro_group": "The idea of north",
+    }
+    info = build_dataset.parse_file_name("(SAATBP)Another Day of Sun - LA LA Land OST.nwc")
+    assert info["file_title"] == "Another Day of Sun" and info["pro_group"] == ""
+    assert build_dataset.title_key("겨울을 걷는다") == build_dataset.title_key("겨울을걷는다")
+
+
+def test_match_filters_amateur_and_length():
+    from tools.match_youtube import usable
+
+    ok = {"title": "Pentatonix - Imagine", "channel": "Pentatonix", "duration": 200}
+    assert usable(ok, 210)
+    assert not usable({**ok, "title": "Imagine 정기공연 실황"}, 210)
+    assert not usable({**ok, "duration": 1200}, 210)
+
+
+def test_align_margin_separates_right_and_wrong_audio():
+    score = chorale_score()
+    y, _ = render_satb(CHORALE, bpm=100)
+    right = align(score, y, SR)
+    rng = np.random.default_rng(0)
+    other = {k: [(s, d, int(rng.integers(48, 72))) for s, d, _ in v] for k, v in CHORALE.items()}
+    wrong = align(score, render_satb(other, bpm=100)[0], SR)
+    assert right.margin > wrong.margin
+    assert right.cost < wrong.cost
+    # 음원이 악보보다 두 배 넘게 짧으면 정렬하지 않는다
+    assert align(score, y[: len(y) // 3], SR).cost == float("inf")
+
+
+def test_synth_staff_voice_uses_range_for_unknown_names():
+    from training.synth import staff_voice
+
+    assert staff_voice("Staff-1", [72, 74, 76]).clef == "treble"
+    assert staff_voice("Staff-4", [40, 45, 48]).clef == "bass"
+    assert staff_voice("Tenor", [72]).clef == "treble8vb"  # 이름이 분명하면 이름을 따른다
+    assert staff_voice("Solo (F)", [70]).high_midi == 84  # Lead 음역
+
+
+def test_salience_pack_roundtrip():
+    from training.storage import pack_salience, unpack_salience
+
+    x = np.linspace(0, 1, 50, dtype=np.float32).reshape(5, 10)
+    packed = pack_salience(x)
+    assert packed.dtype == np.uint8
+    assert np.abs(unpack_salience(packed) - x).max() <= 1 / 510 + 1e-6

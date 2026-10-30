@@ -4,7 +4,8 @@
     uv run python -m training.real_data --split valid --out data/real
 
 곡마다 음원의 Basic Pitch contour와, 정렬 CSV(data/align/<song_id>.csv)로 악보 박을 초로 옮긴
-성부별 정답 궤적을 만든다. 음원은 메타데이터 audio_path → data/audio/<song_id>.* → youtube_url
+성부별 정답 궤적을 만든다. tools/match_youtube.py가 남긴 contour(data/cache/salience/<song_id>.npz)가
+있으면 그것을 쓰고, 없으면 음원을 메타데이터 audio_path → data/audio/<song_id>.* → youtube_url
 순서로 찾는다. test 분할은 만들지 않는다.
 """
 
@@ -26,6 +27,7 @@ from acappella.pipeline.voices import ONNX_K, encode_voice_ranges, order_voices
 from acappella.score_utils import merge_ties
 from eval.metrics import load_csv_time_map, transpose
 from eval.run_eval import resolve_audio
+from training.storage import pack_salience, unpack_salience
 from training.synth import voices_for
 
 log = logging.getLogger(__name__)
@@ -40,11 +42,15 @@ def make_real_example(meta: SongMeta, data_dir: Path, settings, backend: str = "
     )
     voices = voices_for(meta, score)
     tmap = load_csv_time_map(align)
-    clip = ingest(
-        resolve_audio(meta, data_dir), data_dir / "cache" / "real" / meta.song_id, settings
-    )
-    act = estimate_pitch(preprocess(clip), backend)
-    T = act.salience.shape[0]
+    cached = data_dir / "cache" / "salience" / f"{meta.song_id}.npz"
+    if cached.exists():
+        salience = unpack_salience(np.load(cached)["salience"])
+    else:
+        clip = ingest(
+            resolve_audio(meta, data_dir), data_dir / "cache" / "real" / meta.song_id, settings
+        )
+        salience = estimate_pitch(preprocess(clip), backend).salience
+    T = salience.shape[0]
     frame_t = np.arange(T) * HOP / SR
     specs = [v for _, v in voices]
     order = order_voices(specs)
@@ -55,7 +61,7 @@ def make_real_example(meta: SongMeta, data_dir: Path, settings, backend: str = "
             on, off = tmap(np.array([float(q.start_beat), float(q.start_beat + q.dur_beats)]))
             target[slot, (frame_t >= on) & (frame_t < off)] = q.midi
     ranges = encode_voice_ranges([specs[i] for i in order])
-    return act.salience.astype(np.float16), target, ranges
+    return salience.astype(np.float16), target, ranges
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -84,7 +90,9 @@ def main(argv: list[str] | None = None) -> int:
             log.warning("%s 건너뜀: %s", m.song_id, e)
             continue
         dst.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(dst, salience=sal, target_midi=tgt, ranges=ranges, song_id=m.song_id)
+        np.savez_compressed(
+            dst, salience=pack_salience(sal), target_midi=tgt, ranges=ranges, song_id=m.song_id
+        )
         n += 1
     print(f"{args.split}: {n}곡 → {args.out / args.split}")
     return 0

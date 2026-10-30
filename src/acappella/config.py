@@ -157,27 +157,29 @@ class Thresholds:
     harmonic_penalty: float = 0.5  # 배음으로 본 후보의 salience 배수
     range_margin: int = 3  # 음역 밖 이 반음까지는 벌점 없이 허용
     range_weight: float = 0.6  # 음역 밖 반음당 벌점
-    unison_cost: float = 0.6  # 두 성부가 같은 후보를 나눠 가질 때 벌점(유니즌 채우기)
+    # 두 성부가 같은 후보를 나눠 가질 때 벌점. 0.6이면 성부 수보다 후보가 적을 때마다 이웃 성부의
+    # 음을 복사해 중복 음표가 60%를 넘었다(정답 악보 18%). 2.0에서 중복 3% 안팎.
+    unison_cost: float = 2.0
     drop_cost: float = 1.5  # 후보를 아무 성부에도 배정하지 않을 때 (salience 배수) 벌점
     silence_cost: float = 2.0  # 후보가 있는데 성부를 무음으로 둘 때 벌점
     target_weight: float = 1.0  # Viterbi: 프레임 목표 음높이에서 반음당 벌점
     jump_cost: float = 1.5  # Viterbi: 음높이가 바뀔 때 고정 벌점
     step_cost: float = 0.15  # Viterbi: 바뀐 반음당 벌점
     voicing_cost: float = 3.0  # Viterbi: 무음 ↔ 유성 전환 벌점
+    # voices (학습 모델): 다른 성부가 고른 음 대신 2순위를 쓸 최소 확률비(0이면 끔)
+    onnx_dedupe_ratio: float = 0.3
     # notes
-    median_window: int = 5  # 프레임
-    min_note_sec: float = 0.08
+    median_window: int = 9  # 프레임(약 0.1초). 비브라토·음정 흔들림으로 음이 쪼개지지 않게
+    min_note_sec: float = 0.15
     onset_split_min_sec: float = 0.12
     # rhythm
-    grid_division: int = 4
+    grid_division: int = 2  # 4분음표 하나를 몇 칸으로(2 = 8분음표 격자). 4면 16분음표까지
     tempo_min: float = 65.0  # 추정 템포가 이보다 느리면 두 배로 본다
-    tempo_max: float = (
-        170.0  # 이보다 빠르면 절반으로 본다  # 4분음표 하나를 몇 칸으로 나눌지(4 = 16분음표 격자)
-    )
+    tempo_max: float = 170.0  # 이보다 빠르면 절반으로 본다
     # postprocess
     spurious_max_beats: float = 0.25
     spurious_jump: int = 5
-    unison_fill_max_beats: float = 1.0
+    unison_fill_max_beats: float = 0.0  # 0이면 빈 구간을 이웃 성부 음으로 채우지 않는다(중복 방지)
     range_warn_margin: int = 3
 
 

@@ -26,13 +26,14 @@ from pathlib import Path
 import numpy as np
 from scipy.signal import fftconvolve, lfilter
 
-from acappella.config import default_voice
+from acappella.config import VOICE_DEFAULTS, default_voice
 from acappella.meta import SongMeta, load_all
 from acappella.nwc.reader import read_nwctxt
 from acappella.pipeline.pitch import HOP, SR, estimate_pitch
 from acappella.pipeline.voices import ONNX_K, encode_voice_ranges, order_voices
 from acappella.score_utils import merge_ties
 from acappella.types import AudioClip, QNote, Score, VoiceSpec
+from training.storage import pack_salience
 
 log = logging.getLogger(__name__)
 VP_RE = re.compile(r"(?i)(vp|perc|beat|drum|비트|퍼커|드럼)")
@@ -133,6 +134,35 @@ def beatbox_noise(
     return level * out
 
 
+NAME_ALIASES = {
+    "s": "S", "sop": "S", "soprano": "S", "s1": "S1", "s2": "S2",
+    "a": "A", "alto": "A", "a1": "A1", "a2": "A2", "mezzo": "A", "meso": "A", "m": "A",
+    "t": "T", "tenor": "T", "t1": "T1", "t2": "T2",
+    "bar": "Bar", "bari": "Bar", "bariton": "Bar", "baritone": "Bar", "br": "Bar",
+    "b": "B", "bass": "B",
+    "lead": "Lead", "solo": "Lead", "리드": "Lead", "솔로": "Lead",
+}  # fmt: skip
+_CLASSES = ("S", "A", "T", "Bar", "B")
+
+
+def staff_voice(name: str, midis: list[int]) -> VoiceSpec:
+    """스태프 → 앱 기본 음역의 VoiceSpec. 이름이 성부 이름이면 그대로, 아니면(Staff-1, 사람 이름 등)
+    실제 음의 중앙값에 가장 가까운 성부(S/A/T/Bar/B)로 본다. 앱에서 사용자가 고르는 기본 음역과
+    같은 인코딩을 학습에 쓰기 위해서다."""
+    key = re.sub(r"[\s().\-_0-9]*$", "", name.strip().lower()) if name else ""
+    key = NAME_ALIASES.get(name.strip().lower(), NAME_ALIASES.get(key, ""))
+    if not key and re.search(r"(?i)(solo|lead|리드|솔로)", name):
+        key = "Lead"
+    if not key:
+        med = float(np.median(midis))
+        key = min(
+            _CLASSES, key=lambda c: abs((VOICE_DEFAULTS[c][1] + VOICE_DEFAULTS[c][2]) / 2 - med)
+        )
+    spec = default_voice(key)
+    spec.name = name
+    return spec
+
+
 def voices_for(meta: SongMeta, score: Score) -> list[tuple[str, VoiceSpec]]:
     """(스태프 이름, VoiceSpec) 목록. VP 스태프는 뺀다. 최대 K개."""
     staves = [v.name for v in score.voices]
@@ -141,9 +171,10 @@ def voices_for(meta: SongMeta, score: Score) -> list[tuple[str, VoiceSpec]]:
     for staff, name in zip(staves, names):
         if VP_RE.search(name) or VP_RE.search(staff):
             continue
-        if not any(q.midi is not None for q in score.parts[staff]):
+        midis = [q.midi for q in score.parts[staff] if q.midi is not None]
+        if not midis:
             continue
-        out.append((staff, default_voice(name)))
+        out.append((staff, staff_voice(name, midis)))
     return out[:ONNX_K]
 
 
@@ -209,10 +240,13 @@ def build(
     cross_mix: float,
     seed: int,
     limit: int | None,
+    shard: int = 0,
+    num_shards: int = 1,
 ) -> int:
     metas = [m for m in load_all(data_dir / "meta" / "songs") if m.split in ("train", "valid")]
     if limit:
         metas = metas[:limit]
+    mine = {m.song_id for i, m in enumerate(metas) if i % num_shards == shard}
     rng = random.Random(seed)
     scores = {}
     for m in metas:
@@ -221,7 +255,7 @@ def build(
             scores[m.song_id] = read_nwctxt(path)
     count = 0
     for m in metas:
-        if m.song_id not in scores:
+        if m.song_id not in scores or m.song_id not in mine:
             continue
         score = scores[m.song_id]
         voices = voices_for(m, score)
@@ -233,20 +267,44 @@ def build(
             if dst.exists():
                 count += 1
                 continue  # 중단 후 재실행하면 이어서 만든다
+            rng = random.Random(f"{seed}:{m.song_id}:{k}")  # 샤드 나눔과 상관없이 재현된다
             aug = sample_aug(rng, len(voices), renderer)
             replace = None
             if pool and rng.random() < cross_mix:
                 replace = cross_part(scores[rng.choice(pool)], voices, rng)
             sal, tgt, ranges = render_example(
-                score, voices, aug, seed * 1000 + count, replace, backend
+                score, voices, aug, rng.randrange(2**31), replace, backend
             )
             dst.parent.mkdir(parents=True, exist_ok=True)
             np.savez_compressed(
-                dst, salience=sal, target_midi=tgt, ranges=ranges, song_id=m.song_id, variant=k
+                dst,
+                salience=pack_salience(sal),
+                target_midi=tgt,
+                ranges=ranges,
+                song_id=m.song_id,
+                variant=k,
             )
             count += 1
             log.info("%s (%d개)", dst.name, count)
     return count
+
+
+def resplit(data_dir: Path, out_dir: Path) -> dict[str, int]:
+    """분할이 바뀐 뒤(예: 유튜브 매칭으로 test 곡이 생긴 뒤) 합성 파일을 현재 분할 폴더로 옮긴다.
+    test 곡의 합성본은 평가 오염을 막기 위해 지운다."""
+    split_of = {m.song_id: m.split for m in load_all(data_dir / "meta" / "songs")}
+    moved = removed = 0
+    for f in sorted(Path(out_dir).glob("*/*.npz")):
+        sid = f.stem.rsplit("_", 1)[0]
+        want = split_of.get(sid, "")
+        if want not in ("train", "valid"):
+            f.unlink()
+            removed += 1
+        elif f.parent.name != want:
+            (out_dir / want).mkdir(parents=True, exist_ok=True)
+            f.replace(out_dir / want / f.name)
+            moved += 1
+    return {"moved": moved, "removed": removed}
 
 
 def metas_split(metas: list[SongMeta], song_id: str) -> str:
@@ -276,8 +334,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cross-mix", type=float, default=0.2, help="곡간 성부 교체 확률")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--limit", type=int)
+    ap.add_argument("--shard", type=int, default=0, help="여러 프로세스로 나눌 때 이 프로세스 번호")
+    ap.add_argument("--num-shards", type=int, default=1)
+    ap.add_argument("--resplit", action="store_true", help="만들지 않고, 현재 분할에 맞게 옮기기만")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
+    if args.resplit:
+        print(resplit(args.data_dir, args.out))
+        return 0
     n = build(
         args.data_dir,
         args.out,
@@ -287,6 +351,8 @@ def main(argv: list[str] | None = None) -> int:
         args.cross_mix,
         args.seed,
         args.limit,
+        args.shard,
+        args.num_shards,
     )
     print(f"합성 예시 {n}개 → {args.out}")
     return 0

@@ -94,10 +94,17 @@ def test_assign_frame_rank_order():
 
 
 def test_assign_frame_unison_fills_missing_voice():
-    th = Thresholds()
+    th = Thresholds(unison_cost=0.6)
     # 소프라노·알토가 같은 음(67)이라 후보가 셋뿐
     out = assign_frame([67, 60, 48], [0.9, 0.8, 0.8], SATB, th)
     assert out == [67, 67, 60, 48]
+
+
+def test_assign_frame_default_prefers_rest_over_duplicate():
+    # 기본값은 후보가 모자라면 같은 음을 복사하지 않고 한 성부를 쉬게 한다(중복 음표 방지)
+    out = assign_frame([67, 60, 48], [0.9, 0.8, 0.8], SATB, Thresholds())
+    assert sorted(p for p in out if p is not None) == [48, 60, 67]
+    assert out.count(None) == 1
 
 
 def test_assign_frame_drops_extra_candidate():
@@ -298,3 +305,16 @@ def test_place_lyrics_skips_tied_and_rests():
     }
     out = place_lyrics(Score("t", 100, (4, 4), 0, [SATB[0]], parts), "S", "아 이 우")
     assert [q.lyric for q in out.parts["S"]] == ["아", None, None, "이"]
+
+
+def test_dedupe_unisons_moves_weaker_voice_to_second_choice():
+    from acappella.pipeline.voices import dedupe_unisons
+
+    prob = np.zeros((2, 1, 5))
+    prob[0, 0, [3, 2]] = [0.9, 0.05]
+    prob[1, 0, [3, 1]] = [0.6, 0.3]  # 1순위가 겹치고 2순위가 충분히 그럴듯하다
+    active = np.ones((2, 1), bool)
+    assert dedupe_unisons(prob, active, 0.3)[:, 0].tolist() == [3, 1]
+    assert dedupe_unisons(prob, active, 0.0)[:, 0].tolist() == [3, 3]
+    prob[1, 0, 1] = 0.1  # 2순위가 약하면 진짜 유니즌으로 둔다
+    assert dedupe_unisons(prob, active, 0.3)[:, 0].tolist() == [3, 3]
